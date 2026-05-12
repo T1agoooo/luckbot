@@ -3,6 +3,7 @@ from discord.ext import commands
 import random
 import os
 from pymongo import MongoClient
+from datetime import datetime, timezone, timedelta
 
 # ---- CONFIGURATION ----
 TOKEN = os.environ.get("TOKEN")
@@ -101,13 +102,24 @@ def get_user(user_id):
     uid = str(user_id)
     user = users_col.find_one({"_id": uid})
     if not user:
-        user = {"_id": uid, "pity": {}, "inventory": {}, "active_boost": None, "best_roll": None}
+        user = {
+            "_id": uid,
+            "pity": {},
+            "inventory": {},
+            "active_boost": None,
+            "best_roll": None,
+            "rolls": 0,
+            "rebirths": 0,
+            "last_daily": None,
+        }
         try:
             users_col.insert_one(user)
         except:
             user = users_col.find_one({"_id": uid})
-    if "best_roll" not in user:
-        user["best_roll"] = None
+    # patch missing fields
+    for field, default in [("best_roll", None), ("rolls", 0), ("rebirths", 0), ("last_daily", None)]:
+        if field not in user:
+            user[field] = default
     return user
 
 def save_user(user):
@@ -133,11 +145,17 @@ async def luck(ctx):
     luck_multiplier = 1.5 if is_booster else 1.0
     drop_multiplier = 1.25 if is_booster else 1.0
 
+    # Rebirth stacking 2x per rebirth
+    rebirths = user.get("rebirths", 0)
+    if rebirths > 0:
+        luck_multiplier *= (2 ** rebirths)
+
     if user["active_boost"]:
         boost_name = user["active_boost"]
         luck_multiplier *= ITEMS[boost_name]["boost"]
         user["active_boost"] = None
 
+    user["rolls"] = user.get("rolls", 0) + 1
     roll = random.randint(1, 100000000)
     effective_roll = roll / luck_multiplier
 
@@ -163,7 +181,6 @@ async def luck(ctx):
         pity[won_role] = pity.get(won_role, 0) + 1
         count = pity[won_role]
 
-        # Update best roll
         if user["best_roll"] is None or ROLES.index(won_role) > ROLES.index(user["best_roll"]):
             user["best_roll"] = won_role
 
@@ -199,6 +216,154 @@ async def luck(ctx):
         await ctx.send(f"{item['emoji']} {ctx.author.mention} You also found a **{got_item}**! Added to your inventory.")
 
     save_user(user)
+
+@bot.command(name="rebirth")
+async def rebirth(ctx):
+    if ctx.channel.name != LUCK_CHANNEL_NAME:
+        return
+
+    user = get_user(ctx.author.id)
+    rolls = user.get("rolls", 0)
+    rebirths = user.get("rebirths", 0)
+    required = (rebirths + 1) * 1000
+
+    if rolls < required:
+        remaining = required - rolls
+        await ctx.send(f"🔄 {ctx.author.mention} You need **{required:,} rolls** to rebirth. You have **{rolls:,}** — {remaining:,} more to go!")
+        return
+
+    user["rebirths"] = rebirths + 1
+    new_multiplier = 2 ** (rebirths + 1)
+    await ctx.send(
+        f"🌟 **REBIRTH!** {ctx.author.mention} has rebirths **{user['rebirths']}** time(s)!\n"
+        f"Your luck multiplier from rebirths is now **{new_multiplier}x**! 🍀"
+    )
+    save_user(user)
+
+@bot.command(name="daily")
+async def daily(ctx):
+    if ctx.channel.name != LUCK_CHANNEL_NAME:
+        return
+
+    user = get_user(ctx.author.id)
+    now = datetime.now(timezone.utc)
+    last = user.get("last_daily")
+
+    if last:
+        last_dt = datetime.fromisoformat(last)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        diff = now - last_dt
+        if diff < timedelta(hours=24):
+            remaining = timedelta(hours=24) - diff
+            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
+            minutes = remainder // 60
+            await ctx.send(f"⏰ {ctx.author.mention} You already claimed your daily! Come back in **{hours}h {minutes}m**.")
+            return
+
+    inv = user["inventory"]
+    inv["Lucky Dice"] = inv.get("Lucky Dice", 0) + 1
+    user["last_daily"] = now.isoformat()
+    await ctx.send(f"🎲 {ctx.author.mention} You claimed your daily **Lucky Dice**! Use it with `?use lucky dice` for 5x luck. Come back tomorrow!")
+    save_user(user)
+
+@bot.command(name="profile")
+async def profile(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    user = get_user(target.id)
+
+    rolls = user.get("rolls", 0)
+    rebirths = user.get("rebirths", 0)
+    best = user.get("best_roll") or "None"
+    chance = ROLE_DISPLAY_CHANCES.get(best, "—") if best != "None" else "—"
+    inv = user.get("inventory", {})
+    active = user.get("active_boost")
+
+    inv_summary = ", ".join([f"{ITEMS[i]['emoji']} {i} x{c}" for i, c in inv.items()]) if inv else "Empty"
+    active_str = f"{ITEMS[active]['emoji']} {active}" if active else "None"
+
+    lines = [
+        f"🍀 **{target.display_name}'s Profile**\n",
+        f"🎲 **Rolls:** {rolls:,}",
+        f"🌟 **Rebirths:** {rebirths}",
+        f"🏆 **Best Roll:** {best} *({chance})*",
+        f"🎒 **Inventory:** {inv_summary}",
+        f"⚡ **Active Boost:** {active_str}",
+    ]
+    await ctx.send("\n".join(lines))
+
+@bot.command(name="serverstats")
+async def serverstats(ctx):
+    all_users = list(users_col.find({}))
+
+    total_rolls = sum(u.get("rolls", 0) for u in all_users)
+    total_rebirths = sum(u.get("rebirths", 0) for u in all_users)
+    total_players = len(all_users)
+
+    best_user = None
+    best_index = -1
+    for u in all_users:
+        if u.get("best_roll"):
+            idx = ROLES.index(u["best_roll"])
+            if idx > best_index:
+                best_index = idx
+                best_user = u
+
+    if best_user:
+        member = ctx.guild.get_member(int(best_user["_id"]))
+        best_name = member.display_name if member else "Unknown"
+        best_role = best_user["best_roll"]
+        best_chance = ROLE_DISPLAY_CHANCES[best_role]
+        rarest_str = f"**{best_role}** by {best_name} *({best_chance})*"
+    else:
+        rarest_str = "Nobody has rolled anything yet!"
+
+    lines = [
+        f"📊 **SERVER LUCK STATS**\n",
+        f"👥 **Total Players:** {total_players:,}",
+        f"🎲 **Total Rolls:** {total_rolls:,}",
+        f"🌟 **Total Rebirths:** {total_rebirths:,}",
+        f"🏆 **Rarest Roll Ever:** {rarest_str}",
+    ]
+    await ctx.send("\n".join(lines))
+
+@bot.command(name="lb")
+async def leaderboard(ctx, category: str = "rolls"):
+    all_users = list(users_col.find({}))
+
+    if category.lower() == "rebirths":
+        all_users = [u for u in all_users if u.get("rebirths", 0) > 0]
+        if not all_users:
+            await ctx.send("🌟 Nobody has rebirths yet!")
+            return
+        all_users.sort(key=lambda u: u.get("rebirths", 0), reverse=True)
+        top = all_users[:10]
+        lines = ["🌟 **REBIRTH LEADERBOARD — TOP 10**\n"]
+        medals = ["🥇", "🥈", "🥉"]
+        for i, u in enumerate(top):
+            member = ctx.guild.get_member(int(u["_id"]))
+            name = member.display_name if member else "Unknown"
+            medal = medals[i] if i < 3 else f"**#{i+1}**"
+            lines.append(f"{medal} {name} — **{u.get('rebirths', 0)}** rebirths")
+        await ctx.send("\n".join(lines))
+
+    else:
+        all_users = [u for u in all_users if u.get("best_roll")]
+        if not all_users:
+            await ctx.send("🏆 No one has rolled anything yet!")
+            return
+        all_users.sort(key=lambda u: ROLES.index(u["best_roll"]), reverse=True)
+        top = all_users[:10]
+        lines = ["🏆 **LUCK LEADERBOARD — TOP 10**\n"]
+        medals = ["🥇", "🥈", "🥉"]
+        for i, u in enumerate(top):
+            member = ctx.guild.get_member(int(u["_id"]))
+            name = member.display_name if member else "Unknown"
+            best = u["best_roll"]
+            chance = ROLE_DISPLAY_CHANCES[best]
+            medal = medals[i] if i < 3 else f"**#{i+1}**"
+            lines.append(f"{medal} {name} — **{best}** *(chance: {chance})*")
+        await ctx.send("\n".join(lines))
 
 @bot.command(name="use")
 async def use_item(ctx, *, item_name: str):
@@ -247,31 +412,6 @@ async def inventory(ctx):
     if active:
         emoji = ITEMS[active]["emoji"]
         lines.append(f"\n⚡ **Active Boost:** {emoji} {active} ({ITEMS[active]['boost']}x) — ready for next roll!")
-
-    await ctx.send("\n".join(lines))
-
-@bot.command(name="lb")
-async def leaderboard(ctx):
-    all_users = list(users_col.find({"best_roll": {"$ne": None}}))
-
-    if not all_users:
-        await ctx.send("🏆 No one has rolled anything yet!")
-        return
-
-    # Sort by best roll index
-    all_users.sort(key=lambda u: ROLES.index(u["best_roll"]), reverse=True)
-    top = all_users[:10]
-
-    lines = ["🏆 **LUCK LEADERBOARD — TOP 10**\n"]
-    medals = ["🥇", "🥈", "🥉"]
-
-    for i, u in enumerate(top):
-        member = ctx.guild.get_member(int(u["_id"]))
-        name = member.display_name if member else f"Unknown ({u['_id']})"
-        best = u["best_roll"]
-        chance = ROLE_DISPLAY_CHANCES[best]
-        medal = medals[i] if i < 3 else f"**#{i+1}**"
-        lines.append(f"{medal} {name} — **{best}** *(chance: {chance})*")
 
     await ctx.send("\n".join(lines))
 
