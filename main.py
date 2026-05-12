@@ -88,11 +88,46 @@ ROLE_DISPLAY_CHANCES = {
     "Eternal III":   "1 in 100,000,000",
 }
 
-ITEMS = {
-    "Lucky Dice":         {"chance": 2000000,  "boost": 5,    "emoji": "🎲"},
-    "Golden Lucky Dice":  {"chance": 200000,   "boost": 25,   "emoji": "🟡🎲"},
-    "Diamond Lucky Dice": {"chance": 100000,   "boost": 100,  "emoji": "💎🎲"},
-    "Cosmic Lucky Dice":  {"chance": 10000,    "boost": 1000, "emoji": "🌌🎲"},
+# Dice items — stored in active_boosts as a list now
+DICE = {
+    "Lucky Dice":         {"boost": 5,    "emoji": "🎲"},
+    "Golden Lucky Dice":  {"boost": 25,   "emoji": "🟡🎲"},
+    "Diamond Lucky Dice": {"boost": 100,  "emoji": "💎🎲"},
+    "Cosmic Lucky Dice":  {"boost": 1000, "emoji": "🌌🎲"},
+}
+
+# Crafting materials and their drop chances out of 100,000,000
+MATERIALS = {
+    "Shard":     {"chance": 40000000, "emoji": "🔹"},
+    "Crystal":   {"chance": 20000000, "emoji": "💠"},
+    "Essence":   {"chance": 8000000,  "emoji": "🌀"},
+    "Rune":      {"chance": 3000000,  "emoji": "🔮"},
+    "Sigil":     {"chance": 1000000,  "emoji": "⚜️"},
+    "Void Core": {"chance": 200000,   "emoji": "🌑"},
+}
+
+# Craft recipes
+RECIPES = {
+    "Lucky Dice": {
+        "emoji": "🎲",
+        "boost": "5x",
+        "materials": {"Shard": 10, "Crystal": 5}
+    },
+    "Golden Lucky Dice": {
+        "emoji": "🟡🎲",
+        "boost": "25x",
+        "materials": {"Crystal": 10, "Essence": 5, "Rune": 2}
+    },
+    "Diamond Lucky Dice": {
+        "emoji": "💎🎲",
+        "boost": "100x",
+        "materials": {"Essence": 10, "Rune": 8, "Sigil": 3}
+    },
+    "Cosmic Lucky Dice": {
+        "emoji": "🌌🎲",
+        "boost": "1000x",
+        "materials": {"Sigil": 10, "Void Core": 5, "Rune": 15}
+    },
 }
 
 PROGRESS_EMOJIS = ["🟩", "🟩", "🟩", "🟩", "🟩"]
@@ -106,7 +141,7 @@ def get_user(user_id):
             "_id": uid,
             "pity": {},
             "inventory": {},
-            "active_boost": None,
+            "active_boosts": [],
             "best_roll": None,
             "rolls": 0,
             "rebirths": 0,
@@ -117,13 +152,28 @@ def get_user(user_id):
         except:
             user = users_col.find_one({"_id": uid})
     # patch missing fields
-    for field, default in [("best_roll", None), ("rolls", 0), ("rebirths", 0), ("last_daily", None)]:
+    for field, default in [
+        ("best_roll", None), ("rolls", 0), ("rebirths", 0),
+        ("last_daily", None), ("active_boosts", [])
+    ]:
         if field not in user:
             user[field] = default
+    # migrate old active_boost single value to list
+    if "active_boost" in user:
+        old = user.pop("active_boost")
+        if old and old not in user["active_boosts"]:
+            user["active_boosts"].append(old)
     return user
 
 def save_user(user):
     users_col.replace_one({"_id": user["_id"]}, user, upsert=True)
+
+def get_total_boost(active_boosts):
+    total = 1.0
+    for dice_name in active_boosts:
+        if dice_name in DICE:
+            total *= DICE[dice_name]["boost"]
+    return total
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -145,29 +195,54 @@ async def luck(ctx):
     luck_multiplier = 1.5 if is_booster else 1.0
     drop_multiplier = 1.25 if is_booster else 1.0
 
-    # Rebirth stacking 2x per rebirth
+    # Rebirth stacking
     rebirths = user.get("rebirths", 0)
     if rebirths > 0:
         luck_multiplier *= (2 ** rebirths)
 
-    if user["active_boost"]:
-        boost_name = user["active_boost"]
-        luck_multiplier *= ITEMS[boost_name]["boost"]
-        user["active_boost"] = None
+    # Stack all active dice boosts
+    active_boosts = user.get("active_boosts", [])
+    if active_boosts:
+        dice_boost = get_total_boost(active_boosts)
+        luck_multiplier *= dice_boost
+        boost_str = " × ".join([f"{DICE[d]['emoji']} {DICE[d]['boost']}x" for d in active_boosts])
+        user["active_boosts"] = []
+    else:
+        boost_str = None
 
     user["rolls"] = user.get("rolls", 0) + 1
+    total_rolls = user["rolls"]
+
     roll = random.randint(1, 100000000)
     effective_roll = roll / luck_multiplier
 
-    got_item = None
-    for item_name, item_data in ITEMS.items():
-        adjusted_chance = item_data["chance"] * drop_multiplier
+    # Check material drops (independent rolls per material)
+    dropped_materials = {}
+    for mat_name, mat_data in MATERIALS.items():
+        adjusted_chance = mat_data["chance"] * drop_multiplier
+        mat_roll = random.randint(1, 100000000)
+        if mat_roll <= adjusted_chance:
+            inv = user["inventory"]
+            inv[mat_name] = inv.get(mat_name, 0) + 1
+            dropped_materials[mat_name] = mat_data["emoji"]
+
+    # Check dice drops
+    got_dice = None
+    dice_drop_chances = {
+        "Lucky Dice":         2000000,
+        "Golden Lucky Dice":  200000,
+        "Diamond Lucky Dice": 100000,
+        "Cosmic Lucky Dice":  10000,
+    }
+    for dice_name, chance in dice_drop_chances.items():
+        adjusted_chance = chance * drop_multiplier
         if effective_roll <= adjusted_chance:
             inv = user["inventory"]
-            inv[item_name] = inv.get(item_name, 0) + 1
-            got_item = item_name
+            inv[dice_name] = inv.get(dice_name, 0) + 1
+            got_dice = dice_name
             break
 
+    # Check for role
     won_role = None
     cumulative = 0
     for role_name, chance in ROLE_CHANCES.items():
@@ -176,12 +251,20 @@ async def luck(ctx):
             won_role = role_name
             break
 
+    # Build response
+    msg_parts = []
+
+    if boost_str:
+        msg_parts.append(f"⚡ **Boost active:** {boost_str} = **{luck_multiplier:.0f}x total**")
+
     if won_role:
         pity = user["pity"]
         pity[won_role] = pity.get(won_role, 0) + 1
         count = pity[won_role]
 
-        if user["best_roll"] is None or ROLES.index(won_role) > ROLES.index(user["best_roll"]):
+        # Update best roll (including pity upgrades)
+        current_best = user.get("best_roll")
+        if current_best is None or ROLES.index(won_role) > ROLES.index(current_best):
             user["best_roll"] = won_role
 
         role_obj = discord.utils.get(ctx.guild.roles, name=won_role)
@@ -197,24 +280,145 @@ async def luck(ctx):
                 if next_role_obj:
                     await ctx.author.add_roles(next_role_obj)
                 pity[next_role_name] = pity.get(next_role_name, 0) + 1
-                await ctx.send(
-                    f"🎉 **UPGRADE!** {ctx.author.mention} collected enough **{won_role}** to evolve into **{next_role_name}**! 🚀"
+                # Update best roll for pity upgrade too
+                if user["best_roll"] is None or ROLES.index(next_role_name) > ROLES.index(user["best_roll"]):
+                    user["best_roll"] = next_role_name
+                msg_parts.append(
+                    f"🎉 **UPGRADE!** {ctx.author.mention} evolved **{won_role}** → **{next_role_name}**! 🚀\n"
+                    f"🎲 Total rolls: **{total_rolls:,}**"
                 )
             else:
-                await ctx.send(f"✨ {ctx.author.mention} You already have the max role and got **{won_role}** again!")
+                msg_parts.append(f"✨ {ctx.author.mention} Max role reached! Got **{won_role}** again!\n🎲 Total rolls: **{total_rolls:,}**")
         else:
             filled = "".join([PROGRESS_EMOJIS[i] if i < count else EMPTY_EMOJI for i in range(5)])
-            await ctx.send(
+            msg_parts.append(
                 f"🎊 {ctx.author.mention} You got **{won_role}**!\n"
-                f"Progress: {filled} ({count}/5) — collect {5 - count} more to upgrade!"
+                f"Progress: {filled} ({count}/5) — {5 - count} more to upgrade!\n"
+                f"🎲 Total rolls: **{total_rolls:,}**"
             )
     else:
-        await ctx.send(f"🍃 {ctx.author.mention} You found nothing...")
+        msg_parts.append(f"🍃 {ctx.author.mention} You found nothing... | 🎲 Total rolls: **{total_rolls:,}**")
 
-    if got_item:
-        item = ITEMS[got_item]
-        await ctx.send(f"{item['emoji']} {ctx.author.mention} You also found a **{got_item}**! Added to your inventory.")
+    if got_dice:
+        emoji = DICE[got_dice]["emoji"]
+        msg_parts.append(f"{emoji} You also found a **{got_dice}**! Added to your inventory.")
 
+    if dropped_materials:
+        mat_str = ", ".join([f"{emoji} **{name}**" for name, emoji in dropped_materials.items()])
+        msg_parts.append(f"📦 Materials dropped: {mat_str}")
+
+    await ctx.send("\n".join(msg_parts))
+    save_user(user)
+
+@bot.command(name="use")
+async def use_item(ctx, *, item_name: str):
+    if ctx.channel.name != LUCK_CHANNEL_NAME:
+        return
+
+    user = get_user(ctx.author.id)
+    inv = user["inventory"]
+
+    matched = None
+    for name in DICE:
+        if name.lower() == item_name.lower():
+            matched = name
+            break
+
+    if not matched or inv.get(matched, 0) == 0:
+        await ctx.send(f"❌ {ctx.author.mention} You don't have that item.")
+        save_user(user)
+        return
+
+    inv[matched] -= 1
+    if inv[matched] == 0:
+        del inv[matched]
+
+    user["active_boosts"].append(matched)
+    current_total = get_total_boost(user["active_boosts"])
+    boost = DICE[matched]["boost"]
+    emoji = DICE[matched]["emoji"]
+    await ctx.send(
+        f"{emoji} {ctx.author.mention} Used **{matched}** ({boost}x)!\n"
+        f"⚡ Total active boost: **{current_total:.0f}x** — will apply on your next `?luck`!"
+    )
+    save_user(user)
+
+@bot.command(name="inv")
+async def inventory(ctx):
+    user = get_user(ctx.author.id)
+    inv = user["inventory"]
+    active_boosts = user.get("active_boosts", [])
+
+    if not inv and not active_boosts:
+        await ctx.send(f"🎒 {ctx.author.mention} Your inventory is empty!")
+        return
+
+    lines = [f"🎒 **{ctx.author.display_name}'s Inventory:**\n"]
+
+    # Dice
+    for dice_name in DICE:
+        count = inv.get(dice_name, 0)
+        if count > 0:
+            lines.append(f"{DICE[dice_name]['emoji']} **{dice_name}** x{count}")
+
+    # Materials
+    for mat_name, mat_data in MATERIALS.items():
+        count = inv.get(mat_name, 0)
+        if count > 0:
+            lines.append(f"{mat_data['emoji']} **{mat_name}** x{count}")
+
+    if active_boosts:
+        total = get_total_boost(active_boosts)
+        boost_str = " × ".join([f"{DICE[d]['emoji']} {d}" for d in active_boosts])
+        lines.append(f"\n⚡ **Active Boosts:** {boost_str} = **{total:.0f}x total**")
+
+    await ctx.send("\n".join(lines))
+
+@bot.command(name="craftinfo")
+async def craftinfo(ctx):
+    lines = ["⚒️ **CRAFT RECIPES**\n"]
+    for item_name, data in RECIPES.items():
+        mats = ", ".join([f"{MATERIALS[m]['emoji']} **{m}** x{amt}" for m, amt in data["materials"].items()])
+        lines.append(f"{data['emoji']} **{item_name}** ({data['boost']} luck boost)\n  └ {mats}\n")
+    await ctx.send("\n".join(lines))
+
+@bot.command(name="craft")
+async def craft(ctx, *, item_name: str):
+    if ctx.channel.name != LUCK_CHANNEL_NAME:
+        return
+
+    user = get_user(ctx.author.id)
+    inv = user["inventory"]
+
+    matched = None
+    for name in RECIPES:
+        if name.lower() == item_name.lower():
+            matched = name
+            break
+
+    if not matched:
+        await ctx.send(f"❌ {ctx.author.mention} That item doesn't exist. Use `?craftinfo` to see all recipes!")
+        return
+
+    recipe = RECIPES[matched]
+    missing = []
+    for mat, amount in recipe["materials"].items():
+        if inv.get(mat, 0) < amount:
+            missing.append(f"{MATERIALS[mat]['emoji']} **{mat}** (have {inv.get(mat, 0)}, need {amount})")
+
+    if missing:
+        await ctx.send(f"❌ {ctx.author.mention} Not enough materials!\nMissing: {', '.join(missing)}")
+        return
+
+    # Deduct materials
+    for mat, amount in recipe["materials"].items():
+        inv[mat] -= amount
+        if inv[mat] == 0:
+            del inv[mat]
+
+    # Add crafted item
+    inv[matched] = inv.get(matched, 0) + 1
+    await ctx.send(f"{recipe['emoji']} {ctx.author.mention} Successfully crafted **{matched}**! Use it with `?use {matched.lower()}`!")
     save_user(user)
 
 @bot.command(name="rebirth")
@@ -229,13 +433,13 @@ async def rebirth(ctx):
 
     if rolls < required:
         remaining = required - rolls
-        await ctx.send(f"🔄 {ctx.author.mention} You need **{required:,} rolls** to rebirth. You have **{rolls:,}** — {remaining:,} more to go!")
+        await ctx.send(f"🔄 {ctx.author.mention} You need **{required:,} rolls** to rebirth. You have **{rolls:,}** — **{remaining:,}** more to go!")
         return
 
     user["rebirths"] = rebirths + 1
     new_multiplier = 2 ** (rebirths + 1)
     await ctx.send(
-        f"🌟 **REBIRTH!** {ctx.author.mention} has rebirths **{user['rebirths']}** time(s)!\n"
+        f"🌟 **REBIRTH!** {ctx.author.mention} has rebirthed **{user['rebirths']}** time(s)!\n"
         f"Your luck multiplier from rebirths is now **{new_multiplier}x**! 🍀"
     )
     save_user(user)
@@ -258,7 +462,7 @@ async def daily(ctx):
             remaining = timedelta(hours=24) - diff
             hours, remainder = divmod(int(remaining.total_seconds()), 3600)
             minutes = remainder // 60
-            await ctx.send(f"⏰ {ctx.author.mention} You already claimed your daily! Come back in **{hours}h {minutes}m**.")
+            await ctx.send(f"⏰ {ctx.author.mention} Already claimed! Come back in **{hours}h {minutes}m**.")
             return
 
     inv = user["inventory"]
@@ -277,18 +481,20 @@ async def profile(ctx, member: discord.Member = None):
     best = user.get("best_roll") or "None"
     chance = ROLE_DISPLAY_CHANCES.get(best, "—") if best != "None" else "—"
     inv = user.get("inventory", {})
-    active = user.get("active_boost")
+    active_boosts = user.get("active_boosts", [])
 
-    inv_summary = ", ".join([f"{ITEMS[i]['emoji']} {i} x{c}" for i, c in inv.items()]) if inv else "Empty"
-    active_str = f"{ITEMS[active]['emoji']} {active}" if active else "None"
+    dice_summary = ", ".join([f"{DICE[d]['emoji']} {d}" for d in inv if d in DICE and inv[d] > 0]) or "None"
+    mat_summary = ", ".join([f"{MATERIALS[m]['emoji']} {m} x{inv[m]}" for m in inv if m in MATERIALS and inv[m] > 0]) or "None"
+    boost_str = f"{get_total_boost(active_boosts):.0f}x ({', '.join(active_boosts)})" if active_boosts else "None"
 
     lines = [
         f"🍀 **{target.display_name}'s Profile**\n",
         f"🎲 **Rolls:** {rolls:,}",
         f"🌟 **Rebirths:** {rebirths}",
         f"🏆 **Best Roll:** {best} *({chance})*",
-        f"🎒 **Inventory:** {inv_summary}",
-        f"⚡ **Active Boost:** {active_str}",
+        f"🎲 **Dice:** {dice_summary}",
+        f"📦 **Materials:** {mat_summary}",
+        f"⚡ **Active Boost:** {boost_str}",
     ]
     await ctx.send("\n".join(lines))
 
@@ -346,7 +552,6 @@ async def leaderboard(ctx, category: str = "rolls"):
             medal = medals[i] if i < 3 else f"**#{i+1}**"
             lines.append(f"{medal} {name} — **{u.get('rebirths', 0)}** rebirths")
         await ctx.send("\n".join(lines))
-
     else:
         all_users = [u for u in all_users if u.get("best_roll")]
         if not all_users:
@@ -364,55 +569,5 @@ async def leaderboard(ctx, category: str = "rolls"):
             medal = medals[i] if i < 3 else f"**#{i+1}**"
             lines.append(f"{medal} {name} — **{best}** *(chance: {chance})*")
         await ctx.send("\n".join(lines))
-
-@bot.command(name="use")
-async def use_item(ctx, *, item_name: str):
-    if ctx.channel.name != LUCK_CHANNEL_NAME:
-        return
-
-    user = get_user(ctx.author.id)
-    inv = user["inventory"]
-
-    matched = None
-    for name in ITEMS:
-        if name.lower() == item_name.lower():
-            matched = name
-            break
-
-    if not matched or inv.get(matched, 0) == 0:
-        await ctx.send(f"❌ {ctx.author.mention} You don't have that item.")
-        save_user(user)
-        return
-
-    inv[matched] -= 1
-    if inv[matched] == 0:
-        del inv[matched]
-
-    user["active_boost"] = matched
-    boost = ITEMS[matched]["boost"]
-    emoji = ITEMS[matched]["emoji"]
-    await ctx.send(f"{emoji} {ctx.author.mention} Used **{matched}**! Your next `?luck` roll has **{boost}x** luck boost! 🍀")
-    save_user(user)
-
-@bot.command(name="inv")
-async def inventory(ctx):
-    user = get_user(ctx.author.id)
-    inv = user["inventory"]
-    active = user["active_boost"]
-
-    if not inv and not active:
-        await ctx.send(f"🎒 {ctx.author.mention} Your inventory is empty!")
-        return
-
-    lines = [f"🎒 **{ctx.author.display_name}'s Inventory:**\n"]
-    for item_name, count in inv.items():
-        emoji = ITEMS[item_name]["emoji"]
-        lines.append(f"{emoji} **{item_name}** x{count}")
-
-    if active:
-        emoji = ITEMS[active]["emoji"]
-        lines.append(f"\n⚡ **Active Boost:** {emoji} {active} ({ITEMS[active]['boost']}x) — ready for next roll!")
-
-    await ctx.send("\n".join(lines))
 
 bot.run(TOKEN)
