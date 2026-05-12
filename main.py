@@ -102,7 +102,10 @@ def get_user(user_id):
     user = users_col.find_one({"_id": uid})
     if not user:
         user = {"_id": uid, "pity": {}, "inventory": {}, "active_boost": None, "best_roll": None}
-        users_col.insert_one(user)
+        try:
+            users_col.insert_one(user)
+        except:
+            user = users_col.find_one({"_id": uid})
     if "best_roll" not in user:
         user["best_roll"] = None
     return user
