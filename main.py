@@ -57,6 +57,36 @@ ROLE_CHANCES = {
     "Eternal III":   1,
 }
 
+ROLE_DISPLAY_CHANCES = {
+    "Common I":      "1 in 3",
+    "Common II":     "1 in 6",
+    "Common III":    "1 in 10",
+    "Uncommon I":    "1 in 20",
+    "Uncommon II":   "1 in 40",
+    "Uncommon III":  "1 in 75",
+    "Rare I":        "1 in 150",
+    "Rare II":       "1 in 300",
+    "Rare III":      "1 in 600",
+    "Epic I":        "1 in 1,000",
+    "Epic II":       "1 in 2,000",
+    "Epic III":      "1 in 4,000",
+    "Legendary I":   "1 in 7,000",
+    "Legendary II":  "1 in 15,000",
+    "Legendary III": "1 in 30,000",
+    "Mythic I":      "1 in 50,000",
+    "Mythic II":     "1 in 75,000",
+    "Mythic III":    "1 in 100,000",
+    "Divine I":      "1 in 150,000",
+    "Divine II":     "1 in 250,000",
+    "Divine III":    "1 in 500,000",
+    "Celestial I":   "1 in 750,000",
+    "Celestial II":  "1 in 1,000,000",
+    "Celestial III": "1 in 2,000,000",
+    "Eternal I":     "1 in 5,000,000",
+    "Eternal II":    "1 in 10,000,000",
+    "Eternal III":   "1 in 100,000,000",
+}
+
 ITEMS = {
     "Lucky Dice":         {"chance": 2000000,  "boost": 5,    "emoji": "🎲"},
     "Golden Lucky Dice":  {"chance": 200000,   "boost": 25,   "emoji": "🟡🎲"},
@@ -71,8 +101,10 @@ def get_user(user_id):
     uid = str(user_id)
     user = users_col.find_one({"_id": uid})
     if not user:
-        user = {"_id": uid, "pity": {}, "inventory": {}, "active_boost": None}
+        user = {"_id": uid, "pity": {}, "inventory": {}, "active_boost": None, "best_roll": None}
         users_col.insert_one(user)
+    if "best_roll" not in user:
+        user["best_roll"] = None
     return user
 
 def save_user(user):
@@ -127,6 +159,10 @@ async def luck(ctx):
         pity = user["pity"]
         pity[won_role] = pity.get(won_role, 0) + 1
         count = pity[won_role]
+
+        # Update best roll
+        if user["best_roll"] is None or ROLES.index(won_role) > ROLES.index(user["best_roll"]):
+            user["best_roll"] = won_role
 
         role_obj = discord.utils.get(ctx.guild.roles, name=won_role)
         if role_obj and role_obj not in ctx.author.roles:
@@ -208,6 +244,31 @@ async def inventory(ctx):
     if active:
         emoji = ITEMS[active]["emoji"]
         lines.append(f"\n⚡ **Active Boost:** {emoji} {active} ({ITEMS[active]['boost']}x) — ready for next roll!")
+
+    await ctx.send("\n".join(lines))
+
+@bot.command(name="lb")
+async def leaderboard(ctx):
+    all_users = list(users_col.find({"best_roll": {"$ne": None}}))
+
+    if not all_users:
+        await ctx.send("🏆 No one has rolled anything yet!")
+        return
+
+    # Sort by best roll index
+    all_users.sort(key=lambda u: ROLES.index(u["best_roll"]), reverse=True)
+    top = all_users[:10]
+
+    lines = ["🏆 **LUCK LEADERBOARD — TOP 10**\n"]
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, u in enumerate(top):
+        member = ctx.guild.get_member(int(u["_id"]))
+        name = member.display_name if member else f"Unknown ({u['_id']})"
+        best = u["best_roll"]
+        chance = ROLE_DISPLAY_CHANCES[best]
+        medal = medals[i] if i < 3 else f"**#{i+1}**"
+        lines.append(f"{medal} {name} — **{best}** *(chance: {chance})*")
 
     await ctx.send("\n".join(lines))
 
