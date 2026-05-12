@@ -150,17 +150,19 @@ async def luck(ctx):
             await ctx.author.add_roles(role_obj)
 
         # Check pity upgrade
-        if count >= 5:
-            pity[won_role] = 0
-            role_index = ROLES.index(won_role)
-            if role_index + 1 < len(ROLES):
-                next_role_name = ROLES[role_index + 1]
-                next_role_obj = discord.utils.get(ctx.guild.roles, name=next_role_name)
-                if next_role_obj:
-                    await ctx.author.add_roles(next_role_obj)
-                await ctx.send(
-                    f"🎉 **UPGRADE!** {ctx.author.mention} collected enough **{won_role}** to evolve into **{next_role_name}**! 🚀"
-                )
+       if count >= 5:
+    pity[won_role] = 0
+    role_index = ROLES.index(won_role)
+    if role_index + 1 < len(ROLES):
+        next_role_name = ROLES[role_index + 1]
+        next_role_obj = discord.utils.get(ctx.guild.roles, name=next_role_name)
+        if next_role_obj:
+            await ctx.author.add_roles(next_role_obj)
+        # Count upgrade as 1 point towards next tier
+        pity[next_role_name] = pity.get(next_role_name, 0) + 1
+        await ctx.send(
+            f"🎉 **UPGRADE!** {ctx.author.mention} collected enough **{won_role}** to evolve into **{next_role_name}**! 🚀"
+        )
             else:
                 await ctx.send(f"✨ {ctx.author.mention} You already have the max role and got **{won_role}** again. Legendary!")
         else:
