@@ -1,16 +1,20 @@
 import discord
 from discord.ext import commands
 import random
-import json
 import os
+from pymongo import MongoClient
 
 # ---- CONFIGURATION ----
 TOKEN = os.environ.get("TOKEN")
+MONGO_URL = os.environ.get("MONGO_URL")
 LUCK_CHANNEL_NAME = "🍀・luck-roll"
 BOOSTER_ROLE_NAME = "Server Booster"
 # ------------------------
 
-# All roles in order from lowest to highest
+client = MongoClient(MONGO_URL)
+db = client["luckbot"]
+users_col = db["users"]
+
 ROLES = [
     "Common I", "Common II", "Common III",
     "Uncommon I", "Uncommon II", "Uncommon III",
@@ -23,7 +27,6 @@ ROLES = [
     "Eternal I", "Eternal II", "Eternal III",
 ]
 
-# Chances out of 100,000,000
 ROLE_CHANCES = {
     "Common I":      33333333,
     "Common II":     16666666,
@@ -54,39 +57,26 @@ ROLE_CHANCES = {
     "Eternal III":   1,
 }
 
-# Items and their chances out of 100,000,000
 ITEMS = {
-    "Lucky Dice":        {"chance": 2000000, "boost": 5,    "emoji": "🎲"},
-    "Golden Lucky Dice": {"chance": 200000,  "boost": 25,   "emoji": "🟡🎲"},
-    "Diamond Lucky Dice":{"chance": 100000,  "boost": 100,  "emoji": "💎🎲"},
-    "Cosmic Lucky Dice": {"chance": 10000,   "boost": 1000, "emoji": "🌌🎲"},
+    "Lucky Dice":         {"chance": 2000000,  "boost": 5,    "emoji": "🎲"},
+    "Golden Lucky Dice":  {"chance": 200000,   "boost": 25,   "emoji": "🟡🎲"},
+    "Diamond Lucky Dice": {"chance": 100000,   "boost": 100,  "emoji": "💎🎲"},
+    "Cosmic Lucky Dice":  {"chance": 10000,    "boost": 1000, "emoji": "🌌🎲"},
 }
 
 PROGRESS_EMOJIS = ["🟩", "🟩", "🟩", "🟩", "🟩"]
 EMPTY_EMOJI = "⬜"
 
-# Load/save data
-DATA_FILE = "data.json"
-
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-def get_user(data, user_id):
+def get_user(user_id):
     uid = str(user_id)
-    if uid not in data:
-        data[uid] = {
-            "pity": {},
-            "inventory": {},
-            "active_boost": None
-        }
-    return data[uid]
+    user = users_col.find_one({"_id": uid})
+    if not user:
+        user = {"_id": uid, "pity": {}, "inventory": {}, "active_boost": None}
+        users_col.insert_one(user)
+    return user
+
+def save_user(user):
+    users_col.replace_one({"_id": user["_id"]}, user, upsert=True)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -103,15 +93,11 @@ async def luck(ctx):
     if ctx.channel.name != LUCK_CHANNEL_NAME:
         return
 
-    data = load_data()
-    user = get_user(data, ctx.author.id)
-
-    # Check if booster
+    user = get_user(ctx.author.id)
     is_booster = discord.utils.get(ctx.author.roles, name=BOOSTER_ROLE_NAME) is not None
     luck_multiplier = 1.5 if is_booster else 1.0
     drop_multiplier = 1.25 if is_booster else 1.0
 
-    # Check active boost
     if user["active_boost"]:
         boost_name = user["active_boost"]
         luck_multiplier *= ITEMS[boost_name]["boost"]
@@ -120,7 +106,6 @@ async def luck(ctx):
     roll = random.randint(1, 100000000)
     effective_roll = roll / luck_multiplier
 
-    # Check for items first
     got_item = None
     for item_name, item_data in ITEMS.items():
         adjusted_chance = item_data["chance"] * drop_multiplier
@@ -130,7 +115,6 @@ async def luck(ctx):
             got_item = item_name
             break
 
-    # Check for role
     won_role = None
     cumulative = 0
     for role_name, chance in ROLE_CHANCES.items():
@@ -139,7 +123,6 @@ async def luck(ctx):
             won_role = role_name
             break
 
-    # Handle role win
     if won_role:
         pity = user["pity"]
         pity[won_role] = pity.get(won_role, 0) + 1
@@ -149,22 +132,20 @@ async def luck(ctx):
         if role_obj and role_obj not in ctx.author.roles:
             await ctx.author.add_roles(role_obj)
 
-        # Check pity upgrade
-       if count >= 5:
-    pity[won_role] = 0
-    role_index = ROLES.index(won_role)
-    if role_index + 1 < len(ROLES):
-        next_role_name = ROLES[role_index + 1]
-        next_role_obj = discord.utils.get(ctx.guild.roles, name=next_role_name)
-        if next_role_obj:
-            await ctx.author.add_roles(next_role_obj)
-        # Count upgrade as 1 point towards next tier
-        pity[next_role_name] = pity.get(next_role_name, 0) + 1
-        await ctx.send(
-            f"🎉 **UPGRADE!** {ctx.author.mention} collected enough **{won_role}** to evolve into **{next_role_name}**! 🚀"
-        )
+        if count >= 5:
+            pity[won_role] = 0
+            role_index = ROLES.index(won_role)
+            if role_index + 1 < len(ROLES):
+                next_role_name = ROLES[role_index + 1]
+                next_role_obj = discord.utils.get(ctx.guild.roles, name=next_role_name)
+                if next_role_obj:
+                    await ctx.author.add_roles(next_role_obj)
+                pity[next_role_name] = pity.get(next_role_name, 0) + 1
+                await ctx.send(
+                    f"🎉 **UPGRADE!** {ctx.author.mention} collected enough **{won_role}** to evolve into **{next_role_name}**! 🚀"
+                )
             else:
-                await ctx.send(f"✨ {ctx.author.mention} You already have the max role and got **{won_role}** again. Legendary!")
+                await ctx.send(f"✨ {ctx.author.mention} You already have the max role and got **{won_role}** again!")
         else:
             filled = "".join([PROGRESS_EMOJIS[i] if i < count else EMPTY_EMOJI for i in range(5)])
             await ctx.send(
@@ -174,23 +155,20 @@ async def luck(ctx):
     else:
         await ctx.send(f"🍃 {ctx.author.mention} You found nothing...")
 
-    # Announce item drop separately
     if got_item:
         item = ITEMS[got_item]
         await ctx.send(f"{item['emoji']} {ctx.author.mention} You also found a **{got_item}**! Added to your inventory.")
 
-    save_data(data)
+    save_user(user)
 
 @bot.command(name="use")
 async def use_item(ctx, *, item_name: str):
     if ctx.channel.name != LUCK_CHANNEL_NAME:
         return
 
-    data = load_data()
-    user = get_user(data, ctx.author.id)
+    user = get_user(ctx.author.id)
     inv = user["inventory"]
 
-    # Match item name case-insensitively
     matched = None
     for name in ITEMS:
         if name.lower() == item_name.lower():
@@ -199,7 +177,7 @@ async def use_item(ctx, *, item_name: str):
 
     if not matched or inv.get(matched, 0) == 0:
         await ctx.send(f"❌ {ctx.author.mention} You don't have that item.")
-        save_data(data)
+        save_user(user)
         return
 
     inv[matched] -= 1
@@ -210,13 +188,11 @@ async def use_item(ctx, *, item_name: str):
     boost = ITEMS[matched]["boost"]
     emoji = ITEMS[matched]["emoji"]
     await ctx.send(f"{emoji} {ctx.author.mention} Used **{matched}**! Your next `?luck` roll has **{boost}x** luck boost! 🍀")
-
-    save_data(data)
+    save_user(user)
 
 @bot.command(name="inv")
 async def inventory(ctx):
-    data = load_data()
-    user = get_user(data, ctx.author.id)
+    user = get_user(ctx.author.id)
     inv = user["inventory"]
     active = user["active_boost"]
 
