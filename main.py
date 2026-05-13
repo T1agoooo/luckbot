@@ -206,12 +206,12 @@ async def luck(ctx):
     user["rolls"] = user.get("rolls", 0) + 1
     total_rolls = user["rolls"]
 
-    roll = random.randint(1, int(100000000 / luck_multiplier)) if luck_multiplier > 1 else random.randint(1, 100000000)
-effective_roll = roll
+    max_roll = max(1, int(100000000 / luck_multiplier))
+    effective_roll = random.randint(1, max_roll)
 
     dropped_materials = {}
     for mat_name, mat_data in MATERIALS.items():
-        adjusted_chance = mat_data["chance"] * drop_multiplier
+        adjusted_chance = int(mat_data["chance"] * drop_multiplier)
         mat_roll = random.randint(1, 100000000)
         if mat_roll <= adjusted_chance:
             inv = user["inventory"]
@@ -226,7 +226,7 @@ effective_roll = roll
         "Cosmic Lucky Dice":  10000,
     }
     for dice_name, chance in dice_drop_chances.items():
-        adjusted_chance = chance * drop_multiplier
+        adjusted_chance = int(chance * drop_multiplier)
         if effective_roll <= adjusted_chance:
             inv = user["inventory"]
             inv[dice_name] = inv.get(dice_name, 0) + 1
@@ -326,7 +326,6 @@ async def use_item(ctx, *, item_name: str):
         save_user(user)
         return
 
-    # Check if this dice type is already active
     if matched in user["active_boosts"]:
         await ctx.send(f"❌ {ctx.author.mention} You already have a **{matched}** active! Use `?luck` first to consume it.")
         return
