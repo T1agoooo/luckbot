@@ -226,7 +226,7 @@ async def luck(ctx):
         "Cosmic Lucky Dice":  10000,
     }
     for dice_name, chance in dice_drop_chances.items():
-        adjusted_chance = int(chance * drop_multiplier)
+        adjusted_chance = int(chance * drop_multiplier / luck_multiplier)  # FIX: apply luck_multiplier
         if effective_roll <= adjusted_chance:
             inv = user["inventory"]
             inv[dice_name] = inv.get(dice_name, 0) + 1
@@ -236,7 +236,7 @@ async def luck(ctx):
     won_role = None
     cumulative = 0
     for role_name, chance in ROLE_CHANCES.items():
-        cumulative += chance
+        cumulative += int(chance / luck_multiplier)  # FIX: scale thresholds by luck_multiplier
         if effective_roll <= cumulative:
             won_role = role_name
             break
