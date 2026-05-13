@@ -206,8 +206,8 @@ async def luck(ctx):
     user["rolls"] = user.get("rolls", 0) + 1
     total_rolls = user["rolls"]
 
-    roll = random.randint(1, 100000000)
-    effective_roll = roll / luck_multiplier
+    roll = random.randint(1, int(100000000 / luck_multiplier)) if luck_multiplier > 1 else random.randint(1, 100000000)
+effective_roll = roll
 
     dropped_materials = {}
     for mat_name, mat_data in MATERIALS.items():
@@ -324,6 +324,11 @@ async def use_item(ctx, *, item_name: str):
     if not matched or inv.get(matched, 0) == 0:
         await ctx.send(f"❌ {ctx.author.mention} You don't have that item.")
         save_user(user)
+        return
+
+    # Check if this dice type is already active
+    if matched in user["active_boosts"]:
+        await ctx.send(f"❌ {ctx.author.mention} You already have a **{matched}** active! Use `?luck` first to consume it.")
         return
 
     inv[matched] -= 1
