@@ -203,7 +203,7 @@ dice_boost = get_total_boost(active_boosts)
 luck_multiplier *= dice_boost
 boost_str = " × ".join([f"{DICE[d]['emoji']} {DICE[d]['boost']}x" for d in active_boosts])
 # consume boosts after applying
-user["active_boosts"] = ]
+user["active_boosts"] = []
 else:
 boost_str = None
 
