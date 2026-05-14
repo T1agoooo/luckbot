@@ -206,8 +206,8 @@ async def luck(ctx):
     user["rolls"] = user.get("rolls", 0) + 1
     total_rolls = user["rolls"]
 
-    max_roll = max(1, int(100000000 / luck_multiplier))
-    effective_roll = random.randint(1, max_roll)
+    effective_roll = random.randint(1, 100000000) / luck_multiplier
+effective_roll = max(1, int(effective_roll))
 
     dropped_materials = {}
     for mat_name, mat_data in MATERIALS.items():
